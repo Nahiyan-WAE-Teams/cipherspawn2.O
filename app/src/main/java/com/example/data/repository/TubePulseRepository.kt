@@ -33,9 +33,6 @@ import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
@@ -479,141 +476,22 @@ class TubePulseRepository(
         notificationsEnabled: Boolean = true,
     ): Result<Int> {
         return try {
-            ensureApiCredentialsAvailable()
             val cachedChannels = dao.getChannelsSync(userId)
-            val cloudChannels = if (cachedChannels.isEmpty()) {
+            val channelsToSync = if (cachedChannels.isEmpty()) {
                 db.collection("users").document(userId).collection("channels")
                     .get().await()
                     .toObjects(TrackedChannel::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
                     .also { syncCloudChannelsToRoom(userId, it) }
                 dao.getChannelsSync(userId)
-            } else {
-                cachedChannels
+            } else cachedChannels
+
+            var synced = 0
+            for (previous in channelsToSync) {
+                val result = syncSingleChannel(userId, previous.channelId, notificationsEnabled)
+                if (result.isSuccess) synced++
             }
-
-            if (cloudChannels.isEmpty()) return Result.success(0)
-
-            var syncedCount = 0
-            // Batch channel requests up to 50 per call for maximum scalability
-            cloudChannels.chunked(50).forEach { batch ->
-                val ids = batch.joinToString(",") { it.channelId }
-                val response = youtubeApi.getChannelsByIds(ids = ids)
-                val byId = response.items.associateBy { it.id }
-
-                coroutineScope {
-                    batch.map { prev ->
-                        async {
-                            val fresh = byId[prev.channelId] ?: return@async
-                            val stats = fresh.statistics
-                            val newSubs = stats?.subscriberCount?.toLongOrNull() ?: prev.subscriberCount
-                            val newViews = stats?.viewCount?.toLongOrNull() ?: prev.viewCount
-                            val newVideos = stats?.videoCount?.toLongOrNull() ?: prev.videoCount
-                            val hiddenSubs = stats?.hiddenSubscriberCount ?: prev.hiddenSubscriberCount
-                            val uploadsId = fresh.contentDetails?.relatedPlaylists?.uploads
-                                ?: prev.uploadsPlaylistId
-
-                            val videos = fetchRecentVideosForChannel(
-                                userId = userId,
-                                channelId = prev.channelId,
-                                uploadsPlaylistId = uploadsId,
-                            )
-                            val newLikes = if (videos.isNotEmpty()) {
-                                videos.sumOf { it.likeCount }
-                            } else {
-                                prev.latestLikeCount
-                            }
-
-                            val safeTitle = (fresh.snippet?.title?.takeIf { it.isNotBlank() }
-                                ?: prev.title).take(120)
-                            val safeHandle = (fresh.snippet?.customUrl ?: prev.handle)
-                                .takeIf { it.isNotBlank() }?.take(80)
-                            val safeDesc = (fresh.snippet?.description ?: prev.description)
-                                .takeIf { it.isNotBlank() }?.take(500)
-                            val safeThumb = (fresh.snippet?.thumbnails?.bestUrl() ?: prev.thumbnailUrl)
-                                .takeIf { it.isNotBlank() }?.take(500)
-
-                            val docPath = "users/$userId/channels/${prev.channelId}"
-                            try {
-                                val updateMap = mapOf(
-                                    "title" to safeTitle,
-                                    "handle" to safeHandle,
-                                    "description" to safeDesc,
-                                    "thumbnailUrl" to safeThumb,
-                                    "subscriberCount" to newSubs.coerceAtLeast(0L),
-                                    "viewCount" to newViews.coerceAtLeast(0L),
-                                    "videoCount" to newVideos.coerceAtLeast(0L),
-                                    "latestLikeCount" to newLikes.coerceAtLeast(0L),
-                                    "hiddenSubscriberCount" to hiddenSubs,
-                                    "uploadsPlaylistId" to uploadsId.takeIf { it.isNotBlank() }?.take(80),
-                                    "lastSyncedAt" to FieldValue.serverTimestamp(),
-                                    "updatedAt" to FieldValue.serverTimestamp(),
-                                ).filterValues { it != null }
-
-                                db.collection("users").document(userId)
-                                    .collection("channels").document(prev.channelId)
-                                    .update(updateMap)
-                                    .await()
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                handleFirestoreError(e, OperationType.UPDATE, docPath)
-                            }
-
-                            val now = System.currentTimeMillis()
-                            dao.upsertChannel(
-                                prev.copy(
-                                    title = safeTitle,
-                                    handle = safeHandle.orEmpty(),
-                                    description = safeDesc.orEmpty(),
-                                    thumbnailUrl = safeThumb.orEmpty(),
-                                    previousSubscriberCount = prev.subscriberCount,
-                                    subscriberCount = newSubs.coerceAtLeast(0L),
-                                    previousViewCount = prev.viewCount,
-                                    viewCount = newViews.coerceAtLeast(0L),
-                                    videoCount = newVideos.coerceAtLeast(0L),
-                                    previousLikeCount = prev.latestLikeCount,
-                                    latestLikeCount = newLikes.coerceAtLeast(0L),
-                                    hiddenSubscriberCount = hiddenSubs,
-                                    uploadsPlaylistId = uploadsId,
-                                    lastSyncedAtMillis = now,
-                                    updatedAtMillis = now,
-                                )
-                            )
-
-                            val metricsChanged = newSubs != prev.subscriberCount ||
-                                newViews != prev.viewCount ||
-                                newLikes != prev.latestLikeCount ||
-                                newVideos != prev.videoCount
-
-                            if (metricsChanged) {
-                                recordSnapshot(
-                                    uid = userId,
-                                    channelId = prev.channelId,
-                                    subscribers = newSubs,
-                                    views = newViews,
-                                    videos = newVideos,
-                                    likes = newLikes,
-                                )
-                            }
-
-                            if (prev.alertsEnabled && notificationsEnabled) {
-                                checkAndEmitMilestones(
-                                    uid = userId,
-                                    prev = prev,
-                                    newSubs = newSubs,
-                                    newVideos = newVideos,
-                                    newLikes = newLikes,
-                                    title = safeTitle,
-                                )
-                            }
-                            syncedCount++
-                        }
-                    }.awaitAll()
-                }
-            }
-
             TubePulseGlanceWidget.pushWidgetUpdate(appContext)
-            Result.success(syncedCount)
+            Result.success(synced)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -627,75 +505,70 @@ class TubePulseRepository(
         notificationsEnabled: Boolean = true,
     ): Result<Unit> {
         return try {
-            ensureApiCredentialsAvailable()
-            val response = youtubeApi.getChannelsByIds(ids = channelId)
-            val fresh = response.items.firstOrNull()
-                ?: return Result.failure(IllegalStateException("Channel not found on YouTube"))
-            val prev = dao.getChannelsSync(userId).firstOrNull { it.channelId == channelId }
+            val previous = dao.getChannelsSync(userId).firstOrNull { it.channelId == channelId }
+                ?: db.collection("users").document(userId).collection("channels").document(channelId)
+                    .get().await()
+                    .toObject(TrackedChannel::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                    ?.let { tracked ->
+                        syncCloudChannelsToRoom(userId, listOf(tracked))
+                        dao.getChannelsSync(userId).firstOrNull { it.channelId == channelId }
+                    }
+                ?: return Result.failure(IllegalStateException("Channel not found in your tracked list"))
 
-            val stats = fresh.statistics
-            val newSubs = stats?.subscriberCount?.toLongOrNull() ?: prev?.subscriberCount ?: 0L
-            val newViews = stats?.viewCount?.toLongOrNull() ?: prev?.viewCount ?: 0L
-            val newVideos = stats?.videoCount?.toLongOrNull() ?: prev?.videoCount ?: 0L
-            val hiddenSubs = stats?.hiddenSubscriberCount ?: false
-            val uploadsId = fresh.contentDetails?.relatedPlaylists?.uploads ?: prev?.uploadsPlaylistId.orEmpty()
-
-            val videos = fetchRecentVideosForChannel(userId, channelId, uploadsId)
-            val newLikes = if (videos.isNotEmpty()) videos.sumOf { it.likeCount } else (prev?.latestLikeCount ?: 0L)
-
-            val safeTitle = (fresh.snippet?.title?.takeIf { it.isNotBlank() } ?: prev?.title ?: "Channel").take(120)
-            val safeHandle = fresh.snippet?.customUrl?.takeIf { it.isNotBlank() }?.take(80)
-            val safeDesc = fresh.snippet?.description?.takeIf { it.isNotBlank() }?.take(500)
-            val safeThumb = fresh.snippet?.thumbnails?.bestUrl()?.takeIf { it.isNotBlank() }?.take(500)
-
-            val docPath = "users/$userId/channels/$channelId"
-            val updateMap = mapOf(
-                "title" to safeTitle,
-                "handle" to safeHandle,
-                "description" to safeDesc,
-                "thumbnailUrl" to safeThumb,
-                "subscriberCount" to newSubs.coerceAtLeast(0L),
-                "viewCount" to newViews.coerceAtLeast(0L),
-                "videoCount" to newVideos.coerceAtLeast(0L),
-                "latestLikeCount" to newLikes.coerceAtLeast(0L),
-                "hiddenSubscriberCount" to hiddenSubs,
-                "uploadsPlaylistId" to uploadsId.takeIf { it.isNotBlank() }?.take(80),
-                "lastSyncedAt" to FieldValue.serverTimestamp(),
-                "updatedAt" to FieldValue.serverTimestamp(),
-            ).filterValues { it != null }
-
-            db.collection("users").document(userId)
-                .collection("channels").document(channelId)
-                .update(updateMap)
-                .await()
-
+            val source = previous.handle.takeIf { it.startsWith("@") }
+                ?: "https://www.youtube.com/channel/$channelId"
+            val fresh = publicExtractor.fetchChannel(source)
+            val newSubs = fresh.subscriberCount.takeIf { it > 0L } ?: previous.subscriberCount
+            val newVideos = fresh.videoCount.takeIf { it > 0L } ?: previous.videoCount
+            val newViews = previous.viewCount
+            val newLikes = previous.latestLikeCount
+            val hiddenSubs = fresh.hiddenSubscriberCount
+            val title = fresh.title.ifBlank { previous.title }.take(120)
+            val handle = fresh.handle.ifBlank { previous.handle }.take(80)
+            val description = fresh.description.ifBlank { previous.description }.take(500)
+            val thumbnail = fresh.thumbnailUrl.ifBlank { previous.thumbnailUrl }.take(500)
             val now = System.currentTimeMillis()
-            if (prev != null) {
-                dao.upsertChannel(
-                    prev.copy(
-                        title = safeTitle,
-                        handle = safeHandle.orEmpty(),
-                        description = safeDesc.orEmpty(),
-                        thumbnailUrl = safeThumb.orEmpty(),
-                        previousSubscriberCount = prev.subscriberCount,
-                        subscriberCount = newSubs,
-                        previousViewCount = prev.viewCount,
-                        viewCount = newViews,
-                        videoCount = newVideos,
-                        previousLikeCount = prev.latestLikeCount,
-                        latestLikeCount = newLikes,
-                        hiddenSubscriberCount = hiddenSubs,
-                        uploadsPlaylistId = uploadsId,
-                        lastSyncedAtMillis = now,
-                        updatedAtMillis = now,
-                    )
-                )
-                if (prev.alertsEnabled && notificationsEnabled) {
-                    checkAndEmitMilestones(userId, prev, newSubs, newVideos, newLikes, safeTitle)
-                }
-            }
 
-            recordSnapshot(userId, channelId, newSubs, newViews, newVideos, newLikes)
+            db.collection("users").document(userId).collection("channels").document(channelId)
+                .update(
+                    mapOf(
+                        "title" to title,
+                        "handle" to handle.takeIf { it.isNotBlank() },
+                        "description" to description.takeIf { it.isNotBlank() },
+                        "thumbnailUrl" to thumbnail.takeIf { it.isNotBlank() },
+                        "subscriberCount" to newSubs,
+                        "videoCount" to newVideos,
+                        "hiddenSubscriberCount" to hiddenSubs,
+                        "lastSyncedAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp(),
+                    ).filterValues { it != null }
+                ).await()
+
+            dao.upsertChannel(
+                previous.copy(
+                    title = title,
+                    handle = handle,
+                    description = description,
+                    thumbnailUrl = thumbnail,
+                    previousSubscriberCount = previous.subscriberCount,
+                    subscriberCount = newSubs,
+                    previousViewCount = previous.viewCount,
+                    viewCount = newViews,
+                    videoCount = newVideos,
+                    previousLikeCount = previous.latestLikeCount,
+                    latestLikeCount = newLikes,
+                    hiddenSubscriberCount = hiddenSubs,
+                    lastSyncedAtMillis = now,
+                    updatedAtMillis = now,
+                )
+            )
+
+            if (newSubs != previous.subscriberCount || newVideos != previous.videoCount) {
+                recordSnapshot(userId, channelId, newSubs, newViews, newVideos, newLikes)
+            }
+            if (previous.alertsEnabled && notificationsEnabled) {
+                checkAndEmitMilestones(userId, previous, newSubs, newVideos, newLikes, title)
+            }
             TubePulseGlanceWidget.pushWidgetUpdate(appContext)
             Result.success(Unit)
         } catch (e: CancellationException) {
@@ -703,43 +576,6 @@ class TubePulseRepository(
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.UPDATE, "users/$userId/channels/$channelId")
             Result.failure(e)
-        }
-    }
-
-    private suspend fun fetchRecentVideosForChannel(
-        userId: String,
-        channelId: String,
-        uploadsPlaylistId: String,
-    ): List<CachedVideoEntity> {
-        if (uploadsPlaylistId.isBlank()) return emptyList()
-        return try {
-            val playlist = youtubeApi.getPlaylistItems(playlistId = uploadsPlaylistId, maxResults = 10)
-            val videoIds = playlist.items.mapNotNull { it.contentDetails?.videoId }.distinct()
-            if (videoIds.isEmpty()) return emptyList()
-
-            val videosResp = youtubeApi.getVideosByIds(ids = videoIds.joinToString(","))
-            val now = System.currentTimeMillis()
-            val entities = videosResp.items.map { item ->
-                CachedVideoEntity(
-                    videoId = item.id,
-                    channelId = channelId,
-                    userId = userId,
-                    title = item.snippet?.title.orEmpty(),
-                    thumbnailUrl = item.snippet?.thumbnails?.bestUrl().orEmpty(),
-                    viewCount = item.statistics?.viewCount?.toLongOrNull() ?: 0L,
-                    likeCount = item.statistics?.likeCount?.toLongOrNull() ?: 0L,
-                    commentCount = item.statistics?.commentCount?.toLongOrNull() ?: 0L,
-                    publishedAt = item.snippet?.publishedAt.orEmpty(),
-                    durationIso = item.contentDetails?.duration.orEmpty(),
-                    cachedAtMillis = now,
-                )
-            }
-            dao.upsertVideos(entities)
-            entities
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            emptyList()
         }
     }
 
@@ -1045,50 +881,19 @@ class TubePulseRepository(
         dao.upsertChannels(entities)
     }
 
-    private fun ensureApiCredentialsAvailable() {
-        val hasToken = !oauthManager.currentAccessToken().isNullOrBlank()
-        val hasApiKey = oauthManager.isApiKeyConfigured()
-        if (!hasToken && !hasApiKey) {
-            throw IllegalStateException(
-                "Authorize YouTube OAuth 2.0 in Studio or set YOUTUBE_API_KEY in AI Studio Secrets to fetch live YouTube data."
-            )
-        }
-    }
-
-    private fun YouTubeChannelItem.toSearchResult(): YouTubeChannelSearchResult {
-        return YouTubeChannelSearchResult(
-            channelId = id,
-            title = snippet?.title.orEmpty(),
-            handle = snippet?.customUrl.orEmpty(),
-            description = snippet?.description.orEmpty(),
-            thumbnailUrl = snippet?.thumbnails?.bestUrl().orEmpty(),
-            subscriberCount = statistics?.subscriberCount?.toLongOrNull() ?: 0L,
-            viewCount = statistics?.viewCount?.toLongOrNull() ?: 0L,
-            videoCount = statistics?.videoCount?.toLongOrNull() ?: 0L,
-            hiddenSubscriberCount = statistics?.hiddenSubscriberCount ?: false,
-            uploadsPlaylistId = contentDetails?.relatedPlaylists?.uploads.orEmpty(),
+    private fun PublicYouTubeExtractor.PublicChannel.toSearchResult(): YouTubeChannelSearchResult =
+        YouTubeChannelSearchResult(
+            channelId = channelId,
+            title = title,
+            handle = handle,
+            description = description,
+            thumbnailUrl = thumbnailUrl,
+            subscriberCount = subscriberCount.coerceAtLeast(0L),
+            viewCount = 0L,
+            videoCount = videoCount.coerceAtLeast(0L),
+            hiddenSubscriberCount = hiddenSubscriberCount,
+            uploadsPlaylistId = "",
         )
-    }
-
-    private fun extractHandle(input: String): String? {
-        val urlRegex = Regex("""youtube\.com/@([A-Za-z0-9_.\-]+)""", RegexOption.IGNORE_CASE)
-        urlRegex.find(input)?.groupValues?.getOrNull(1)?.let { return "@$it" }
-        return if (input.startsWith("@") && input.length > 1 && !input.contains(" ")) {
-            input
-        } else {
-            null
-        }
-    }
-
-    private fun extractChannelId(input: String): String? {
-        val urlRegex = Regex("""youtube\.com/channel/(UC[A-Za-z0-9_\-]{10,})""", RegexOption.IGNORE_CASE)
-        urlRegex.find(input)?.groupValues?.getOrNull(1)?.let { return it }
-        return if (input.startsWith("UC") && input.length in 20..36 && !input.contains(" ")) {
-            input
-        } else {
-            null
-        }
-    }
 
     private fun computeSmartMilestoneStep(subs: Long): Long = when {
         subs >= 10_000_000L -> 100_000L
