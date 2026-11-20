@@ -8,7 +8,6 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import com.example.data.remote.YouTubeOAuthManager
 import com.example.data.repository.TubePulseRepository
 import com.example.widget.TubePulseGlanceWidget
 import com.google.firebase.Firebase
@@ -27,9 +26,7 @@ class ChannelSyncWorker(
             return Result.success()
         }
 
-        val oauthManager = YouTubeOAuthManager(applicationContext)
-        val repository = TubePulseRepository(applicationContext, oauthManager)
-        oauthManager.refreshTokenSilentlyIfPossible()
+        val repository = TubePulseRepository(applicationContext)
 
         val syncResult = repository.syncAllTrackedChannels(userId = uid, notificationsEnabled = true)
         TubePulseGlanceWidget.pushWidgetUpdate(applicationContext)
