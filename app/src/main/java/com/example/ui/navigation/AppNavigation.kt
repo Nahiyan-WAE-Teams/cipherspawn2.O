@@ -1,9 +1,5 @@
 package com.example.ui.navigation
 
-import android.app.Activity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.IntentSenderRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -53,7 +49,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.credentials.CredentialManager
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -70,7 +65,6 @@ import com.example.R
 import com.example.core.AppNotificationManager
 import com.example.core.NetworkMonitor
 import com.example.data.local.PreferencesDataStore
-import com.example.data.remote.YouTubeOAuthManager
 import com.example.data.repository.TubePulseRepository
 import com.example.ui.auth.AuthManager
 import com.example.ui.auth.AuthScreen
@@ -168,10 +162,7 @@ private fun AuthenticatedStudioShell(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val credentialManager = remember(context) { CredentialManager.create(context) }
-
-    val oauthManager = remember(context) { YouTubeOAuthManager(context) }
-    val repository = remember(context, oauthManager) { TubePulseRepository(context, oauthManager) }
+    val repository = remember(context) { TubePulseRepository(context) }
 
     LaunchedEffect(user.uid) {
         repository.ensureUserProfile(user)
@@ -184,7 +175,6 @@ private fun AuthenticatedStudioShell(
                 val app = checkNotNull(this[APPLICATION_KEY])
                 TubePulseViewModel(
                     repository = repository,
-                    oauthManager = oauthManager,
                     networkMonitor = NetworkMonitor(app),
                     preferencesDataStore = preferencesDataStore,
                     notificationManager = AppNotificationManager(app),
@@ -211,21 +201,9 @@ private fun AuthenticatedStudioShell(
     var showAddChannelSheet by rememberSaveable { mutableStateOf(false) }
     var selectedExpandedChannelId by rememberSaveable { mutableStateOf(initialDeepLinkChannelId) }
 
-    val oauthLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartIntentSenderForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK || result.data != null) {
-            viewModel.onOAuthConsentResult(result.data)
-        }
-    }
-
     LaunchedEffect(viewModel) {
         viewModel.events.collect { event ->
             when (event) {
-                is OneTimeUiEvent.LaunchOAuthConsent -> {
-                    val req = IntentSenderRequest.Builder(event.pendingIntent.intentSender).build()
-                    oauthLauncher.launch(req)
-                }
                 is OneTimeUiEvent.ShowMessage -> {
                     snackbarHostState.showSnackbar(event.message)
                 }
@@ -286,8 +264,6 @@ private fun AuthenticatedStudioShell(
             apiAuthStatus = apiAuthStatus,
             trackedChannelIds = channels.map { it.channelId }.toSet(),
             onSearch = { viewModel.searchChannels(it) },
-            onLoadMyChannel = { viewModel.loadMyYouTubeChannels() },
-            onAuthorizeOAuth = { viewModel.requestYouTubeOAuth() },
             onSelectChannel = { candidate -> viewModel.trackChannel(candidate) },
             onDismiss = {
                 showAddChannelSheet = false
