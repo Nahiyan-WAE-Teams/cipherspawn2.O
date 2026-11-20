@@ -189,7 +189,6 @@ private fun AuthenticatedStudioShell(
     val isLiveStreamActive by viewModel.isLiveStreamActive.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
     val countdownSeconds by viewModel.countdownSeconds.collectAsStateWithLifecycle()
-    val apiAuthStatus by viewModel.apiAuthStatus.collectAsStateWithLifecycle()
     val lastSyncError by viewModel.lastSyncError.collectAsStateWithLifecycle()
     val searchState by viewModel.searchState.collectAsStateWithLifecycle()
     val alertsState by viewModel.alertsState.collectAsStateWithLifecycle()
@@ -261,7 +260,6 @@ private fun AuthenticatedStudioShell(
     if (showAddChannelSheet) {
         AddChannelBottomSheet(
             searchState = searchState,
-            apiAuthStatus = apiAuthStatus,
             trackedChannelIds = channels.map { it.channelId }.toSet(),
             onSearch = { viewModel.searchChannels(it) },
             onSelectChannel = { candidate -> viewModel.trackChannel(candidate) },
