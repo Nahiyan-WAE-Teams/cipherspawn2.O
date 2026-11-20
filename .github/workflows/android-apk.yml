@@ -1,4 +1,5 @@
 name: Android APK Build
+# Rebuild after signing secret setup
 
 on:
   push:
