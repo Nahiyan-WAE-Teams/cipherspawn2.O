@@ -1,7 +1,5 @@
 package com.example.ui.viewmodel
 
-import android.app.PendingIntent
-import android.content.Intent
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -17,8 +15,6 @@ import com.example.data.model.AlertMetricType
 import com.example.data.model.UserProfile
 import com.example.data.model.YouTubeChannelSearchResult
 import com.example.data.remote.ApiAuthStatus
-import com.example.data.remote.OAuthAuthorizeOutcome
-import com.example.data.remote.YouTubeOAuthManager
 import com.example.data.repository.TubePulseRepository
 import com.example.ui.theme.ThemePreference
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -56,13 +52,11 @@ sealed interface SearchState {
 }
 
 sealed interface OneTimeUiEvent {
-    data class LaunchOAuthConsent(val pendingIntent: PendingIntent) : OneTimeUiEvent
     data class ShowMessage(val message: String) : OneTimeUiEvent
 }
 
 class TubePulseViewModel(
     private val repository: TubePulseRepository,
-    private val oauthManager: YouTubeOAuthManager,
     private val networkMonitor: NetworkMonitor,
     private val preferencesDataStore: PreferencesDataStore,
     private val notificationManager: AppNotificationManager,
@@ -70,7 +64,7 @@ class TubePulseViewModel(
 ) : ViewModel() {
 
     val isOnline: StateFlow<Boolean> = networkMonitor.isOnline
-    val apiAuthStatus: StateFlow<ApiAuthStatus> = oauthManager.authStatus
+    val apiAuthStatus: StateFlow<ApiAuthStatus> = MutableStateFlow(ApiAuthStatus())
     val themePreference: StateFlow<ThemePreference> = preferencesDataStore.themePreference
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), ThemePreference.DARK)
 
@@ -142,16 +136,11 @@ class TubePulseViewModel(
         // Keep cloud listener active while VM lives
         cloudSyncState.launchIn(viewModelScope)
 
-        // Try silent YouTube OAuth token refresh if user previously authorized
-        viewModelScope.launch {
-            oauthManager.refreshTokenSilentlyIfPossible()
-        }
-
         // Start real-time polling loop & auto-sync when connectivity recovers
         startRealtimePollingEngine()
         networkMonitor.isOnline
             .onEach { online ->
-                if (online && channels.value.isNotEmpty() && oauthManager.authStatus.value.isReadyForRequests) {
+                if (online && channels.value.isNotEmpty() && true) {
                     syncAllNow(silent = true)
                 }
             }
@@ -241,21 +230,6 @@ class TubePulseViewModel(
                 .onFailure { err ->
                     _searchState.value = SearchState.Error(
                         err.localizedMessage ?: "Failed to search YouTube channels"
-                    )
-                }
-        }
-    }
-
-    fun loadMyYouTubeChannels() {
-        viewModelScope.launch {
-            _searchState.value = SearchState.Searching
-            repository.fetchMyYouTubeChannels()
-                .onSuccess { items ->
-                    _searchState.value = SearchState.Results(items)
-                }
-                .onFailure { err ->
-                    _searchState.value = SearchState.Error(
-                        err.localizedMessage ?: "Connect YouTube OAuth 2.0 to import your channels"
                     )
                 }
         }
@@ -399,45 +373,8 @@ class TubePulseViewModel(
         }
     }
 
-    fun requestYouTubeOAuth() {
-        viewModelScope.launch {
-            when (val outcome = oauthManager.requestYouTubeAuthorization()) {
-                is OAuthAuthorizeOutcome.Authorized -> {
-                    syncOAuthFlagToCloud(true)
-                    _events.tryEmit(OneTimeUiEvent.ShowMessage("YouTube OAuth 2.0 authorized"))
-                }
-                is OAuthAuthorizeOutcome.NeedsUserConsent -> {
-                    _events.tryEmit(OneTimeUiEvent.LaunchOAuthConsent(outcome.pendingIntent))
-                }
-                is OAuthAuthorizeOutcome.Failed -> {
-                    _events.tryEmit(OneTimeUiEvent.ShowMessage(outcome.message))
-                }
-            }
-        }
-    }
-
-    fun onOAuthConsentResult(data: Intent?) {
-        viewModelScope.launch {
-            when (val outcome = oauthManager.handleAuthorizationResultIntent(data)) {
-                is OAuthAuthorizeOutcome.Authorized -> {
-                    syncOAuthFlagToCloud(true)
-                    _events.tryEmit(OneTimeUiEvent.ShowMessage("YouTube OAuth 2.0 connected securely"))
-                }
-                is OAuthAuthorizeOutcome.Failed -> {
-                    _events.tryEmit(OneTimeUiEvent.ShowMessage(outcome.message))
-                }
-                is OAuthAuthorizeOutcome.NeedsUserConsent -> Unit
-            }
-        }
-    }
-
-    private suspend fun syncOAuthFlagToCloud(connected: Boolean) {
-        val profile = (userProfile.value as? UiState.Success)?.data
-        repository.updateSyncPreferences(
-            syncIntervalSeconds = profile?.syncIntervalSeconds ?: 15L,
-            notificationsEnabled = profile?.notificationsEnabled ?: true,
-            oauthConnected = connected,
-        )
+    fun onBeforeSignOut() {
+        liveLoopJob?.cancel()
     }
 
     fun updateSyncInterval(seconds: Long) {
@@ -446,7 +383,6 @@ class TubePulseViewModel(
             repository.updateSyncPreferences(
                 syncIntervalSeconds = seconds,
                 notificationsEnabled = profile?.notificationsEnabled ?: true,
-                oauthConnected = oauthManager.authStatus.value.oauthConnected,
             ).onSuccess {
                 startRealtimePollingEngine()
                 _events.tryEmit(OneTimeUiEvent.ShowMessage("Polling cadence set to ${seconds}s"))
@@ -475,7 +411,6 @@ class TubePulseViewModel(
 
     fun onBeforeSignOut() {
         liveLoopJob?.cancel()
-        oauthManager.clearToken()
     }
 
     private companion object {
