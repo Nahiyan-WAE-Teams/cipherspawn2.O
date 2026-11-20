@@ -43,7 +43,6 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.example.data.model.UserProfile
-import com.example.data.remote.ApiAuthStatus
 import com.example.ui.components.ChannelAvatar
 import com.example.ui.theme.ThemePreference
 import com.example.ui.viewmodel.UiState
@@ -54,10 +53,8 @@ import com.google.firebase.auth.auth
 @Composable
 fun StudioSettingsScreen(
     userProfileState: UiState<UserProfile?>,
-    apiAuthStatus: ApiAuthStatus,
     themePreference: ThemePreference,
     pinnedChannelTitle: String?,
-    onAuthorizeOAuth: () -> Unit,
     onUpdateSyncInterval: (Long) -> Unit,
     onToggleMasterNotifications: (Boolean) -> Unit,
     onSetThemePreference: (ThemePreference) -> Unit,
@@ -152,8 +149,8 @@ fun StudioSettingsScreen(
             }
         }
 
-        // OAuth 2.0 & API Security Card
-        item(key = "oauth_card") {
+        // Public Stats Engine status card; same card shell and spacing as the former API card.
+        item(key = "public_engine_card") {
             Surface(
                 shape = RoundedCornerShape(20.dp),
                 color = MaterialTheme.colorScheme.surface,
@@ -175,37 +172,28 @@ fun StudioSettingsScreen(
                             tint = MaterialTheme.colorScheme.primary,
                         )
                         Text(
-                            text = "YouTube OAuth 2.0 & API Management",
+                            text = "Public Stats Engine",
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                     }
-
                     StatusRow(
-                        label = "OAuth 2.0 Scope (youtube.readonly)",
-                        active = apiAuthStatus.oauthConnected,
-                        activeText = "Authorized",
-                        inactiveText = "Not connected",
+                        label = "Public channel extraction",
+                        active = true,
+                        activeText = "Ready",
+                        inactiveText = "Unavailable",
                     )
                     StatusRow(
-                        label = "YouTube API Key (Secrets / BuildConfig)",
-                        active = apiAuthStatus.apiKeyConfigured,
-                        activeText = "Configured",
-                        inactiveText = "Set in AI Studio Secrets",
+                        label = "YouTube account connection",
+                        active = false,
+                        activeText = "Connected",
+                        inactiveText = "Not required",
                     )
-
-                    Button(
-                        onClick = onAuthorizeOAuth,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("settings_oauth_button"),
-                    ) {
-                        Text(
-                            if (apiAuthStatus.oauthConnected) "Refresh YouTube OAuth 2.0 Token"
-                            else "Authorize YouTube OAuth 2.0"
-                        )
-                    }
+                    Text(
+                        text = "Tracks public channel statistics without a YouTube API key or YouTube sign-in.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
