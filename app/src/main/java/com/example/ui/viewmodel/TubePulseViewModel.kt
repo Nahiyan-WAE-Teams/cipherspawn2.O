@@ -14,7 +14,6 @@ import com.example.data.model.AlertEvent
 import com.example.data.model.AlertMetricType
 import com.example.data.model.UserProfile
 import com.example.data.model.YouTubeChannelSearchResult
-import com.example.data.remote.ApiAuthStatus
 import com.example.data.repository.TubePulseRepository
 import com.example.ui.theme.ThemePreference
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -64,7 +63,6 @@ class TubePulseViewModel(
 ) : ViewModel() {
 
     val isOnline: StateFlow<Boolean> = networkMonitor.isOnline
-    val apiAuthStatus: StateFlow<ApiAuthStatus> = MutableStateFlow(ApiAuthStatus())
     val themePreference: StateFlow<ThemePreference> = preferencesDataStore.themePreference
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), ThemePreference.DARK)
 
@@ -161,7 +159,7 @@ class TubePulseViewModel(
                     delay(1000L)
                 }
                 if (isActive && _isLiveStreamActive.value && isOnline.value &&
-                    channels.value.isNotEmpty() && oauthManager.authStatus.value.isReadyForRequests
+                    channels.value.isNotEmpty()
                 ) {
                     syncAllNow(silent = true)
                 }
@@ -398,7 +396,6 @@ class TubePulseViewModel(
             repository.updateSyncPreferences(
                 syncIntervalSeconds = profile?.syncIntervalSeconds ?: 15L,
                 notificationsEnabled = enabled,
-                oauthConnected = oauthManager.authStatus.value.oauthConnected,
             )
         }
     }
