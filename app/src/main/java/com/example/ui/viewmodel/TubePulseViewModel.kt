@@ -138,7 +138,7 @@ class TubePulseViewModel(
         startRealtimePollingEngine()
         networkMonitor.isOnline
             .onEach { online ->
-                if (online && channels.value.isNotEmpty() && true) {
+                if (online && channels.value.isNotEmpty()) {
                     syncAllNow(silent = true)
                 }
             }
@@ -404,10 +404,6 @@ class TubePulseViewModel(
         viewModelScope.launch {
             preferencesDataStore.setThemePreference(preference)
         }
-    }
-
-    fun onBeforeSignOut() {
-        liveLoopJob?.cancel()
     }
 
     private companion object {
