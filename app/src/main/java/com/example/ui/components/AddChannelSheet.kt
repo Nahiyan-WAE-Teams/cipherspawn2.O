@@ -1,6 +1,5 @@
 package com.example.ui.components
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,9 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -53,18 +50,14 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.core.NumberFormatter
 import com.example.data.model.YouTubeChannelSearchResult
-import com.example.data.remote.ApiAuthStatus
 import com.example.ui.viewmodel.SearchState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddChannelBottomSheet(
     searchState: SearchState,
-    apiAuthStatus: ApiAuthStatus,
     trackedChannelIds: Set<String>,
     onSearch: (String) -> Unit,
-    onLoadMyChannel: () -> Unit,
-    onAuthorizeOAuth: () -> Unit,
     onSelectChannel: (YouTubeChannelSearchResult) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -94,47 +87,11 @@ fun AddChannelBottomSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            if (!apiAuthStatus.isReadyForRequests) {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Key,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                            Text(
-                                text = "YouTube API Credentials Required",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
-                        Text(
-                            text = "Authorize OAuth 2.0 below to query YouTube Data API v3 directly, or configure YOUTUBE_API_KEY in the AI Studio Secrets panel.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Button(
-                            onClick = onAuthorizeOAuth,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("sheet_authorize_oauth_button"),
-                        ) {
-                            Text("Authorize YouTube OAuth 2.0")
-                        }
-                    }
-                }
-            }
+            Text(
+                text = "Public Stats Engine · No YouTube sign-in required",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
 
             OutlinedTextField(
                 value = query,
@@ -160,39 +117,12 @@ fun AddChannelBottomSheet(
                     .testTag("channel_search_input"),
             )
 
-            Row(
+            OutlinedButton(
+                onClick = { onSearch(query) },
+                enabled = query.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Button(
-                    onClick = { onSearch(query) },
-                    enabled = query.isNotBlank(),
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("channel_search_submit"),
-                ) {
-                    Text("Search YouTube")
-                }
-                OutlinedButton(
-                    onClick = {
-                        if (apiAuthStatus.oauthConnected) {
-                            onLoadMyChannel()
-                        } else {
-                            onAuthorizeOAuth()
-                        }
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("import_my_channel_button"),
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.AccountCircle,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(if (apiAuthStatus.oauthConnected) "My Channel" else "OAuth Sign-In")
-                }
+                Text("Search Public Channels")
             }
 
             when (searchState) {
