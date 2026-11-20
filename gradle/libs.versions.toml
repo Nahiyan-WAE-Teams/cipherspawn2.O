@@ -105,7 +105,7 @@ androidx-glance-material3 = { group = "androidx.glance", name = "glance-material
 androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workRuntimeKtx" }
 play-services-auth = { group = "com.google.android.gms", name = "play-services-auth", version.ref = "playServicesAuth" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
-newpipe-extractor = { group = "com.github.teamnewpipe.NewPipeExtractor", name = "extractor", version.ref = "newPipeExtractor" }
+newpipe-extractor = { group = "com.github.TeamNewPipe", name = "NewPipeExtractor", version.ref = "newPipeExtractor" }
 
 
 [plugins]
