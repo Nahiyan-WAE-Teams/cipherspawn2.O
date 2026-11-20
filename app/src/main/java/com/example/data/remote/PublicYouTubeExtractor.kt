@@ -13,7 +13,6 @@ import org.schabi.newpipe.extractor.channel.ChannelInfoItem
 import org.schabi.newpipe.extractor.downloader.Downloader
 import org.schabi.newpipe.extractor.downloader.Request
 import org.schabi.newpipe.extractor.downloader.Response
-import org.schabi.newpipe.extractor.linkhandler.SearchQueryHandlerFactory
 import org.schabi.newpipe.extractor.search.SearchInfo
 import java.util.concurrent.TimeUnit
 
