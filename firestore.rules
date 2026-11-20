@@ -1,0 +1,275 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny all unmatched paths by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- GLOBAL HARDENED HELPERS ---
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // --- ENTITY VALIDATION BLUEPRINTS ---
+    function isValidUserProfile(data, userId) {
+      return data.userId is string &&
+             data.userId == userId &&
+             data.displayName is string &&
+             data.displayName.size() >= 1 &&
+             data.displayName.size() <= 80 &&
+             (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
+             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500)) &&
+             data.oauthConnected is bool &&
+             data.syncIntervalSeconds is int &&
+             data.syncIntervalSeconds >= 10 &&
+             data.syncIntervalSeconds <= 3600 &&
+             data.notificationsEnabled is bool &&
+             data.createdAt is timestamp &&
+             data.createdAt <= request.time &&
+             data.updatedAt is timestamp &&
+             data.updatedAt <= request.time;
+    }
+
+    function isValidTrackedChannel(data, userId, channelId) {
+      return data.userId is string &&
+             data.userId == userId &&
+             data.channelId is string &&
+             data.channelId == channelId &&
+             data.channelId.size() >= 1 &&
+             data.channelId.size() <= 64 &&
+             data.title is string &&
+             data.title.size() >= 1 &&
+             data.title.size() <= 120 &&
+             (!('handle' in data) || (data.handle is string && data.handle.size() <= 80)) &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             (!('thumbnailUrl' in data) || (data.thumbnailUrl is string && data.thumbnailUrl.size() <= 500)) &&
+             data.subscriberCount is int &&
+             data.subscriberCount >= 0 &&
+             data.viewCount is int &&
+             data.viewCount >= 0 &&
+             data.videoCount is int &&
+             data.videoCount >= 0 &&
+             data.latestLikeCount is int &&
+             data.latestLikeCount >= 0 &&
+             data.milestoneStep is int &&
+             data.milestoneStep >= 100 &&
+             data.milestoneStep <= 10000000 &&
+             data.alertsEnabled is bool &&
+             data.pinnedToWidget is bool &&
+             data.hiddenSubscriberCount is bool &&
+             (!('uploadsPlaylistId' in data) || (data.uploadsPlaylistId is string && data.uploadsPlaylistId.size() <= 80)) &&
+             (!('lastSyncedAt' in data) || (data.lastSyncedAt is timestamp && data.lastSyncedAt <= request.time)) &&
+             data.createdAt is timestamp &&
+             data.createdAt <= request.time &&
+             data.updatedAt is timestamp &&
+             data.updatedAt <= request.time;
+    }
+
+    function isValidChannelSnapshot(data, userId, channelId) {
+      return data.userId is string &&
+             data.userId == userId &&
+             data.channelId is string &&
+             data.channelId == channelId &&
+             data.channelId.size() >= 1 &&
+             data.channelId.size() <= 64 &&
+             data.subscriberCount is int &&
+             data.subscriberCount >= 0 &&
+             data.viewCount is int &&
+             data.viewCount >= 0 &&
+             data.videoCount is int &&
+             data.videoCount >= 0 &&
+             data.likeCount is int &&
+             data.likeCount >= 0 &&
+             data.recordedAt is timestamp &&
+             data.recordedAt <= request.time;
+    }
+
+    function isValidAlertEvent(data, userId) {
+      return data.userId is string &&
+             data.userId == userId &&
+             data.channelId is string &&
+             data.channelId.size() >= 1 &&
+             data.channelId.size() <= 64 &&
+             data.channelTitle is string &&
+             data.channelTitle.size() >= 1 &&
+             data.channelTitle.size() <= 120 &&
+             data.metricType in ['SUBSCRIBERS', 'VIEWS', 'LIKES', 'VIDEOS'] &&
+             data.title is string &&
+             data.title.size() >= 1 &&
+             data.title.size() <= 140 &&
+             data.message is string &&
+             data.message.size() >= 1 &&
+             data.message.size() <= 400 &&
+             data.milestoneValue is int &&
+             data.milestoneValue >= 0 &&
+             data.deltaValue is int &&
+             data.acknowledged is bool &&
+             data.createdAt is timestamp &&
+             data.createdAt <= request.time &&
+             data.updatedAt is timestamp &&
+             data.updatedAt <= request.time;
+    }
+
+    // --- COLLECTION RULES ---
+    match /users/{userId} {
+      // Strictly owner-only read (PII isolation: contains email)
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+
+      allow create: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       incoming().keys().hasAll([
+                         'userId', 'displayName', 'oauthConnected',
+                         'syncIntervalSeconds', 'notificationsEnabled',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'displayName', 'email', 'photoUrl',
+                         'oauthConnected', 'syncIntervalSeconds',
+                         'notificationsEnabled', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidUserProfile(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       (
+                         // Action 1: Sync preferences or OAuth status update
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'oauthConnected', 'syncIntervalSeconds',
+                           'notificationsEnabled', 'updatedAt'
+                         ]) ||
+                         // Action 2: Profile refresh on sign-in
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'displayName', 'email', 'photoUrl', 'updatedAt'
+                         ])
+                       );
+
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      // --- TRACKED CHANNELS SUBCOLLECTION ---
+      match /channels/{channelId} {
+        allow get: if isOwner(userId) && isValidId(channelId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(channelId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'channelId', 'title',
+                           'subscriberCount', 'viewCount', 'videoCount',
+                           'latestLikeCount', 'milestoneStep',
+                           'alertsEnabled', 'pinnedToWidget',
+                           'hiddenSubscriberCount', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'channelId', 'title', 'handle',
+                           'description', 'thumbnailUrl', 'subscriberCount',
+                           'viewCount', 'videoCount', 'latestLikeCount',
+                           'milestoneStep', 'alertsEnabled', 'pinnedToWidget',
+                           'hiddenSubscriberCount', 'uploadsPlaylistId',
+                           'lastSyncedAt', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidTrackedChannel(incoming(), userId, channelId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(channelId) &&
+                         isValidTrackedChannel(incoming(), userId, channelId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().channelId == existing().channelId &&
+                         incoming().createdAt == existing().createdAt &&
+                         (
+                           // Action 1: Live telemetry sync from YouTube Data API v3
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'title', 'handle', 'description', 'thumbnailUrl',
+                             'subscriberCount', 'viewCount', 'videoCount',
+                             'latestLikeCount', 'hiddenSubscriberCount',
+                             'uploadsPlaylistId', 'lastSyncedAt', 'updatedAt'
+                           ]) ||
+                           // Action 2: Alert & widget configuration toggle
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'milestoneStep', 'alertsEnabled', 'pinnedToWidget', 'updatedAt'
+                           ])
+                         );
+
+        allow delete: if isOwner(userId) && isValidId(channelId);
+
+        // --- CHANNEL TELEMETRY SNAPSHOTS ---
+        match /snapshots/{snapshotId} {
+          allow get: if isOwner(userId) && isValidId(channelId) && isValidId(snapshotId);
+          allow list: if isOwner(userId) && isValidId(channelId);
+
+          allow create: if isOwner(userId) &&
+                           isValidId(channelId) &&
+                           isValidId(snapshotId) &&
+                           exists(/databases/$(database)/documents/users/$(userId)/channels/$(channelId)) &&
+                           incoming().keys().hasAll([
+                             'userId', 'channelId', 'subscriberCount',
+                             'viewCount', 'videoCount', 'likeCount', 'recordedAt'
+                           ]) &&
+                           incoming().keys().hasOnly([
+                             'userId', 'channelId', 'subscriberCount',
+                             'viewCount', 'videoCount', 'likeCount', 'recordedAt'
+                           ]) &&
+                           isValidChannelSnapshot(incoming(), userId, channelId);
+
+          // Snapshots are immutable audit/telemetry points
+          allow update: if false;
+          allow delete: if isOwner(userId) && isValidId(channelId) && isValidId(snapshotId);
+        }
+      }
+
+      // --- ALERT EVENTS SUBCOLLECTION ---
+      match /alerts/{alertId} {
+        allow get: if isOwner(userId) && isValidId(alertId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(alertId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'channelId', 'channelTitle',
+                           'metricType', 'title', 'message',
+                           'milestoneValue', 'deltaValue',
+                           'acknowledged', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'channelId', 'channelTitle',
+                           'metricType', 'title', 'message',
+                           'milestoneValue', 'deltaValue',
+                           'acknowledged', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidAlertEvent(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(alertId) &&
+                         isValidAlertEvent(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().channelId == existing().channelId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['acknowledged', 'updatedAt']);
+
+        allow delete: if isOwner(userId) && isValidId(alertId);
+      }
+    }
+  }
+}

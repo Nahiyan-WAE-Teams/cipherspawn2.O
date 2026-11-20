@@ -1,0 +1,6 @@
+{
+  "name": "TubePulse",
+  "description": "Real-time YouTube channel subscriber, video, view, and like tracker with Firebase sync, offline caching, home screen widgets, and milestone alerts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

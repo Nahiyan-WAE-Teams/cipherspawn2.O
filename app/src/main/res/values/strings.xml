@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">TubePulse</string>
+    <string name="widget_name">TubePulse Live Stats</string>
+    <string name="widget_description">Track real-time YouTube channel subscribers, views, videos, and likes directly on your home screen.</string>
+    <string name="notification_channel_milestones_name">Channel Milestones &amp; Spikes</string>
+    <string name="notification_channel_milestones_desc">Real-time subscriber milestones, viral view spikes, and new video upload alerts.</string>
+    <string name="notification_channel_sync_name">Background Telemetry Sync</string>
+    <string name="notification_channel_sync_desc">Live channel sync status and offline recovery updates.</string>
+    <string name="sign_in_google">Sign in with Google</string>
+    <string name="connect_youtube_oauth">Authorize YouTube OAuth 2.0</string>
+    <string name="nav_pulse">Pulse</string>
+    <string name="nav_analytics">Analytics</string>
+    <string name="nav_alerts">Alerts</string>
+    <string name="nav_studio">Studio</string>
+    <string name="search_channel_hint">Search channel, @handle, or UC ID…</string>
+    <string name="add_channel">Track Channel</string>
+    <string name="offline_banner">Offline Mode · Showing cached telemetry</string>
+    <string name="live_sync_active">LIVE STREAM</string>
+</resources>

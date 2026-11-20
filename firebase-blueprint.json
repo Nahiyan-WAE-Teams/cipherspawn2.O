@@ -1,0 +1,141 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated creator/analyst profile and dashboard sync preferences.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID of the owner." },
+        "displayName": { "type": "string", "description": "Display name shown in dashboard." },
+        "email": { "type": "string", "description": "Owner email address (PII, owner-only)." },
+        "photoUrl": { "type": "string", "description": "Avatar photo URL." },
+        "oauthConnected": { "type": "boolean", "description": "Whether YouTube OAuth 2.0 scope is authorized." },
+        "syncIntervalSeconds": { "type": "integer", "description": "Real-time polling interval in seconds (10-3600)." },
+        "notificationsEnabled": { "type": "boolean", "description": "Master toggle for milestone push/system alerts." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update." }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "oauthConnected",
+        "syncIntervalSeconds",
+        "notificationsEnabled",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TrackedChannel": {
+      "title": "TrackedChannel",
+      "description": "A public YouTube channel tracked in real time by the user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID." },
+        "channelId": { "type": "string", "description": "YouTube Channel ID (e.g. UC...)." },
+        "title": { "type": "string", "description": "YouTube channel title." },
+        "handle": { "type": "string", "description": "YouTube custom handle (e.g. @handle)." },
+        "description": { "type": "string", "description": "Truncated channel bio/description." },
+        "thumbnailUrl": { "type": "string", "description": "Channel avatar image URL." },
+        "subscriberCount": { "type": "integer", "description": "Latest public subscriber count." },
+        "viewCount": { "type": "integer", "description": "Latest total channel view count." },
+        "videoCount": { "type": "integer", "description": "Latest public video count." },
+        "latestLikeCount": { "type": "integer", "description": "Aggregated likes across recent tracked videos." },
+        "milestoneStep": { "type": "integer", "description": "Subscriber milestone step for system alerts." },
+        "alertsEnabled": { "type": "boolean", "description": "Whether milestone alerts are active for this channel." },
+        "pinnedToWidget": { "type": "boolean", "description": "Whether this channel is pinned to the home screen widget." },
+        "hiddenSubscriberCount": { "type": "boolean", "description": "Whether YouTube hides exact subscriber count." },
+        "uploadsPlaylistId": { "type": "string", "description": "Uploads playlist ID for video telemetry." },
+        "lastSyncedAt": { "type": "string", "format": "date-time", "description": "Last successful YouTube API sync timestamp." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update." }
+      },
+      "required": [
+        "userId",
+        "channelId",
+        "title",
+        "subscriberCount",
+        "viewCount",
+        "videoCount",
+        "latestLikeCount",
+        "milestoneStep",
+        "alertsEnabled",
+        "pinnedToWidget",
+        "hiddenSubscriberCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ChannelSnapshot": {
+      "title": "ChannelSnapshot",
+      "description": "Time-series telemetry snapshot for a tracked YouTube channel.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID." },
+        "channelId": { "type": "string", "description": "Parent YouTube Channel ID." },
+        "subscriberCount": { "type": "integer", "description": "Subscriber count at snapshot time." },
+        "viewCount": { "type": "integer", "description": "View count at snapshot time." },
+        "videoCount": { "type": "integer", "description": "Video count at snapshot time." },
+        "likeCount": { "type": "integer", "description": "Aggregated recent video likes at snapshot time." },
+        "recordedAt": { "type": "string", "format": "date-time", "description": "Server timestamp when snapshot was logged." }
+      },
+      "required": [
+        "userId",
+        "channelId",
+        "subscriberCount",
+        "viewCount",
+        "videoCount",
+        "likeCount",
+        "recordedAt"
+      ]
+    },
+    "AlertEvent": {
+      "title": "AlertEvent",
+      "description": "Milestone or velocity alert triggered during real-time channel tracking.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID." },
+        "channelId": { "type": "string", "description": "Related YouTube Channel ID." },
+        "channelTitle": { "type": "string", "description": "Channel title at alert time." },
+        "metricType": { "type": "string", "enum": ["SUBSCRIBERS", "VIEWS", "LIKES", "VIDEOS"], "description": "Metric that triggered the alert." },
+        "title": { "type": "string", "description": "Alert headline." },
+        "message": { "type": "string", "description": "Alert details." },
+        "milestoneValue": { "type": "integer", "description": "Metric value reached." },
+        "deltaValue": { "type": "integer", "description": "Change since previous checkpoint." },
+        "acknowledged": { "type": "boolean", "description": "Whether the user has read/acknowledged the alert." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update." }
+      },
+      "required": [
+        "userId",
+        "channelId",
+        "channelTitle",
+        "metricType",
+        "title",
+        "message",
+        "milestoneValue",
+        "deltaValue",
+        "acknowledged",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Authenticated user profile and sync configuration."
+    },
+    "/users/{userId}/channels/{channelId}": {
+      "schema": { "$ref": "#/entities/TrackedChannel" },
+      "description": "User's tracked YouTube channels synced across devices."
+    },
+    "/users/{userId}/channels/{channelId}/snapshots/{snapshotId}": {
+      "schema": { "$ref": "#/entities/ChannelSnapshot" },
+      "description": "Historical real-time telemetry snapshots for a tracked channel."
+    },
+    "/users/{userId}/alerts/{alertId}": {
+      "schema": { "$ref": "#/entities/AlertEvent" },
+      "description": "Milestone and real-time spike alerts for the user."
+    }
+  }
+}
