@@ -84,7 +84,7 @@ fun StudioSettingsScreen(
                     color = MaterialTheme.colorScheme.onBackground,
                 )
                 Text(
-                    text = "OAuth 2.0 credentials, sync engine cadence, widgets & account",
+                    text = "Public stats engine, sync cadence, widgets & account",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -185,8 +185,8 @@ fun StudioSettingsScreen(
                     )
                     StatusRow(
                         label = "YouTube account connection",
-                        active = false,
-                        activeText = "Connected",
+                        active = true,
+                        activeText = "Not required",
                         inactiveText = "Not required",
                     )
                     Text(
