@@ -214,7 +214,6 @@ class TubePulseRepository(
                     "displayName" to safeName,
                     "email" to safeEmail,
                     "photoUrl" to safePhoto,
-                    "oauthConnected" to false,
                     "syncIntervalSeconds" to 15L,
                     "notificationsEnabled" to true,
                     "createdAt" to FieldValue.serverTimestamp(),
@@ -242,7 +241,6 @@ class TubePulseRepository(
     suspend fun updateSyncPreferences(
         syncIntervalSeconds: Long,
         notificationsEnabled: Boolean,
-        oauthConnected: Boolean = false,
     ): Result<Unit> {
         var docPath = "users/unauthenticated"
         return try {
@@ -251,7 +249,6 @@ class TubePulseRepository(
             val boundedInterval = syncIntervalSeconds.coerceIn(10L, 3600L)
             db.collection("users").document(uid).update(
                 mapOf(
-                    "oauthConnected" to oauthConnected,
                     "syncIntervalSeconds" to boundedInterval,
                     "notificationsEnabled" to notificationsEnabled,
                     "updatedAt" to FieldValue.serverTimestamp(),
