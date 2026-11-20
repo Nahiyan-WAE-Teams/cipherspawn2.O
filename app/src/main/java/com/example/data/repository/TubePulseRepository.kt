@@ -17,10 +17,7 @@ import com.example.data.model.ChannelSnapshot
 import com.example.data.model.TrackedChannel
 import com.example.data.model.UserProfile
 import com.example.data.model.YouTubeChannelSearchResult
-import com.example.data.remote.YouTubeApiClientFactory
-import com.example.data.remote.YouTubeApiService
-import com.example.data.remote.YouTubeChannelItem
-import com.example.data.remote.YouTubeOAuthManager
+import com.example.data.remote.PublicYouTubeExtractor
 import com.example.widget.TubePulseGlanceWidget
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
@@ -46,19 +43,17 @@ class TubePulseRepository(
     private val db: FirebaseFirestore,
     private val auth: FirebaseAuth,
     private val dao: TubePulseDao,
-    private val youtubeApi: YouTubeApiService,
-    private val oauthManager: YouTubeOAuthManager,
+    private val publicExtractor: PublicYouTubeExtractor,
     private val notificationManager: AppNotificationManager,
     private val appContext: Context,
 ) {
-    constructor(context: Context, oauthManager: YouTubeOAuthManager) : this(
+    constructor(context: Context) : this(
         db = FirebaseFirestore.getInstance(
             context.applicationContext.getString(R.string.firestore_database_id)
         ),
         auth = Firebase.auth,
         dao = TubePulseDatabase.getInstance(context.applicationContext).tubePulseDao(),
-        youtubeApi = YouTubeApiClientFactory.create(oauthManager),
-        oauthManager = oauthManager,
+        publicExtractor = PublicYouTubeExtractor(),
         notificationManager = AppNotificationManager(context.applicationContext),
         appContext = context.applicationContext,
     )
@@ -219,7 +214,7 @@ class TubePulseRepository(
                     "displayName" to safeName,
                     "email" to safeEmail,
                     "photoUrl" to safePhoto,
-                    "oauthConnected" to (oauthManager.currentAccessToken() != null),
+                    "oauthConnected" to false,
                     "syncIntervalSeconds" to 15L,
                     "notificationsEnabled" to true,
                     "createdAt" to FieldValue.serverTimestamp(),
@@ -247,7 +242,7 @@ class TubePulseRepository(
     suspend fun updateSyncPreferences(
         syncIntervalSeconds: Long,
         notificationsEnabled: Boolean,
-        oauthConnected: Boolean,
+        oauthConnected: Boolean = false,
     ): Result<Unit> {
         var docPath = "users/unauthenticated"
         return try {
@@ -271,68 +266,16 @@ class TubePulseRepository(
         }
     }
 
-    suspend fun searchPublicChannels(rawQuery: String): Result<List<YouTubeChannelSearchResult>> {
-        return try {
-            val trimmed = rawQuery.trim()
-            if (trimmed.isBlank()) return Result.success(emptyList())
-
-            ensureApiCredentialsAvailable()
-
-            val extractedHandle = extractHandle(trimmed)
-            val extractedChannelId = extractChannelId(trimmed)
-
-            val channelItems: List<YouTubeChannelItem> = when {
-                extractedChannelId != null -> {
-                    youtubeApi.getChannelsByIds(ids = extractedChannelId).items
-                }
-                extractedHandle != null -> {
-                    val byHandle = youtubeApi.getChannelByHandle(handle = extractedHandle).items
-                    if (byHandle.isNotEmpty()) {
-                        byHandle
-                    } else {
-                        searchAndHydrateChannels(trimmed)
-                    }
-                }
-                else -> {
-                    searchAndHydrateChannels(trimmed)
-                }
-            }
-
-            Result.success(channelItems.map { it.toSearchResult() })
+    suspend fun searchPublicChannels(rawQuery: String): Result<List<YouTubeChannelSearchResult>> =
+        try {
+            val query = rawQuery.trim()
+            if (query.isBlank()) return Result.success(emptyList())
+            Result.success(publicExtractor.searchChannels(query, 8).map { it.toSearchResult() })
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
-    }
-
-    suspend fun fetchMyYouTubeChannels(): Result<List<YouTubeChannelSearchResult>> {
-        return try {
-            if (oauthManager.currentAccessToken().isNullOrBlank()) {
-                val refreshed = oauthManager.refreshTokenSilentlyIfPossible()
-                if (refreshed.isNullOrBlank()) {
-                    return Result.failure(
-                        IllegalStateException("Authorize YouTube OAuth 2.0 first to load your channel.")
-                    )
-                }
-            }
-            val response = youtubeApi.getMyChannels()
-            Result.success(response.items.map { it.toSearchResult() })
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    private suspend fun searchAndHydrateChannels(query: String): List<YouTubeChannelItem> {
-        val searchResponse = youtubeApi.searchChannels(query = query, maxResults = 8)
-        val ids = searchResponse.items
-            .mapNotNull { it.id?.channelId ?: it.snippet?.channelId }
-            .distinct()
-        if (ids.isEmpty()) return emptyList()
-        return youtubeApi.getChannelsByIds(ids = ids.joinToString(",")).items
-    }
 
     suspend fun trackAndSyncChannel(candidate: YouTubeChannelSearchResult): Result<TrackedChannel> {
         var docPath = "users/unauthenticated/channels/${candidate.channelId}"
@@ -344,12 +287,7 @@ class TubePulseRepository(
             val existingLocal = dao.getChannelsSync(uid)
             val shouldPinByDefault = existingLocal.none { it.pinnedToWidget }
 
-            val videoData = fetchRecentVideosForChannel(
-                userId = uid,
-                channelId = candidate.channelId,
-                uploadsPlaylistId = candidate.uploadsPlaylistId
-            )
-            val totalRecentLikes = videoData.sumOf { it.likeCount }
+            val totalRecentLikes = existingLocal.firstOrNull { it.channelId == candidate.channelId }?.latestLikeCount ?: 0L
 
             val docRef = db.collection("users").document(uid)
                 .collection("channels").document(candidate.channelId)
@@ -474,109 +412,94 @@ class TubePulseRepository(
     suspend fun syncAllTrackedChannels(
         userId: String,
         notificationsEnabled: Boolean = true,
-    ): Result<Int> {
-        return try {
-            val cachedChannels = dao.getChannelsSync(userId)
-            val channelsToSync = if (cachedChannels.isEmpty()) {
-                db.collection("users").document(userId).collection("channels")
-                    .get().await()
-                    .toObjects(TrackedChannel::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
-                    .also { syncCloudChannelsToRoom(userId, it) }
-                dao.getChannelsSync(userId)
-            } else cachedChannels
-
-            var synced = 0
-            for (previous in channelsToSync) {
-                val result = syncSingleChannel(userId, previous.channelId, notificationsEnabled)
-                if (result.isSuccess) synced++
-            }
-            TubePulseGlanceWidget.pushWidgetUpdate(appContext)
-            Result.success(synced)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
+    ): Result<Int> = try {
+        val local = dao.getChannelsSync(userId)
+        val channels = if (local.isNotEmpty()) local else {
+            val cloud = db.collection("users").document(userId).collection("channels")
+                .get().await()
+                .toObjects(TrackedChannel::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            syncCloudChannelsToRoom(userId, cloud)
+            dao.getChannelsSync(userId)
         }
+        var count = 0
+        channels.forEach { channel ->
+            if (syncSingleChannel(userId, channel.channelId, notificationsEnabled).isSuccess) count++
+        }
+        TubePulseGlanceWidget.pushWidgetUpdate(appContext)
+        Result.success(count)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
     }
 
     suspend fun syncSingleChannel(
         userId: String,
         channelId: String,
         notificationsEnabled: Boolean = true,
-    ): Result<Unit> {
-        return try {
-            val previous = dao.getChannelsSync(userId).firstOrNull { it.channelId == channelId }
-                ?: db.collection("users").document(userId).collection("channels").document(channelId)
-                    .get().await()
-                    .toObject(TrackedChannel::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
-                    ?.let { tracked ->
-                        syncCloudChannelsToRoom(userId, listOf(tracked))
-                        dao.getChannelsSync(userId).firstOrNull { it.channelId == channelId }
-                    }
-                ?: return Result.failure(IllegalStateException("Channel not found in your tracked list"))
+    ): Result<Unit> = try {
+        val previous = dao.getChannelsSync(userId).firstOrNull { it.channelId == channelId }
+            ?: return Result.failure(IllegalStateException("Channel not found in your tracked list"))
+        val source = previous.handle.takeIf { it.startsWith("@") }
+            ?: "https://www.youtube.com/channel/$channelId"
+        val fresh = publicExtractor.fetchChannel(source)
+        val newSubs = fresh.subscriberCount.takeIf { it > 0L } ?: previous.subscriberCount
+        val newVideos = fresh.videoCount.takeIf { it > 0L } ?: previous.videoCount
+        // Public channel extraction does not expose reliable channel-wide views or likes.
+        val newViews = previous.viewCount
+        val newLikes = previous.latestLikeCount
+        val title = fresh.title.ifBlank { previous.title }.take(120)
+        val handle = fresh.handle.ifBlank { previous.handle }.take(80)
+        val description = fresh.description.ifBlank { previous.description }.take(500)
+        val thumbnail = fresh.thumbnailUrl.ifBlank { previous.thumbnailUrl }.take(500)
+        val now = System.currentTimeMillis()
 
-            val source = previous.handle.takeIf { it.startsWith("@") }
-                ?: "https://www.youtube.com/channel/$channelId"
-            val fresh = publicExtractor.fetchChannel(source)
-            val newSubs = fresh.subscriberCount.takeIf { it > 0L } ?: previous.subscriberCount
-            val newVideos = fresh.videoCount.takeIf { it > 0L } ?: previous.videoCount
-            val newViews = previous.viewCount
-            val newLikes = previous.latestLikeCount
-            val hiddenSubs = fresh.hiddenSubscriberCount
-            val title = fresh.title.ifBlank { previous.title }.take(120)
-            val handle = fresh.handle.ifBlank { previous.handle }.take(80)
-            val description = fresh.description.ifBlank { previous.description }.take(500)
-            val thumbnail = fresh.thumbnailUrl.ifBlank { previous.thumbnailUrl }.take(500)
-            val now = System.currentTimeMillis()
+        db.collection("users").document(userId).collection("channels").document(channelId)
+            .update(
+                mapOf(
+                    "title" to title,
+                    "handle" to handle.takeIf { it.isNotBlank() },
+                    "description" to description.takeIf { it.isNotBlank() },
+                    "thumbnailUrl" to thumbnail.takeIf { it.isNotBlank() },
+                    "subscriberCount" to newSubs,
+                    "videoCount" to newVideos,
+                    "hiddenSubscriberCount" to fresh.hiddenSubscriberCount,
+                    "lastSyncedAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                ).filterValues { it != null }
+            ).await()
 
-            db.collection("users").document(userId).collection("channels").document(channelId)
-                .update(
-                    mapOf(
-                        "title" to title,
-                        "handle" to handle.takeIf { it.isNotBlank() },
-                        "description" to description.takeIf { it.isNotBlank() },
-                        "thumbnailUrl" to thumbnail.takeIf { it.isNotBlank() },
-                        "subscriberCount" to newSubs,
-                        "videoCount" to newVideos,
-                        "hiddenSubscriberCount" to hiddenSubs,
-                        "lastSyncedAt" to FieldValue.serverTimestamp(),
-                        "updatedAt" to FieldValue.serverTimestamp(),
-                    ).filterValues { it != null }
-                ).await()
-
-            dao.upsertChannel(
-                previous.copy(
-                    title = title,
-                    handle = handle,
-                    description = description,
-                    thumbnailUrl = thumbnail,
-                    previousSubscriberCount = previous.subscriberCount,
-                    subscriberCount = newSubs,
-                    previousViewCount = previous.viewCount,
-                    viewCount = newViews,
-                    videoCount = newVideos,
-                    previousLikeCount = previous.latestLikeCount,
-                    latestLikeCount = newLikes,
-                    hiddenSubscriberCount = hiddenSubs,
-                    lastSyncedAtMillis = now,
-                    updatedAtMillis = now,
-                )
+        dao.upsertChannel(
+            previous.copy(
+                title = title,
+                handle = handle,
+                description = description,
+                thumbnailUrl = thumbnail,
+                previousSubscriberCount = previous.subscriberCount,
+                subscriberCount = newSubs,
+                previousViewCount = previous.viewCount,
+                viewCount = newViews,
+                videoCount = newVideos,
+                previousLikeCount = previous.latestLikeCount,
+                latestLikeCount = newLikes,
+                hiddenSubscriberCount = fresh.hiddenSubscriberCount,
+                lastSyncedAtMillis = now,
+                updatedAtMillis = now,
             )
-
-            if (newSubs != previous.subscriberCount || newVideos != previous.videoCount) {
-                recordSnapshot(userId, channelId, newSubs, newViews, newVideos, newLikes)
-            }
-            if (previous.alertsEnabled && notificationsEnabled) {
-                checkAndEmitMilestones(userId, previous, newSubs, newVideos, newLikes, title)
-            }
-            TubePulseGlanceWidget.pushWidgetUpdate(appContext)
-            Result.success(Unit)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, "users/$userId/channels/$channelId")
-            Result.failure(e)
+        )
+        if (newSubs != previous.subscriberCount || newVideos != previous.videoCount) {
+            recordSnapshot(userId, channelId, newSubs, newViews, newVideos, newLikes)
         }
+        if (previous.alertsEnabled && notificationsEnabled) {
+            checkAndEmitMilestones(userId, previous, newSubs, newVideos, newLikes, title)
+        }
+        TubePulseGlanceWidget.pushWidgetUpdate(appContext)
+        Result.success(Unit)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.UPDATE, "users/$userId/channels/$channelId")
+        Result.failure(e)
     }
 
     private suspend fun recordSnapshot(
